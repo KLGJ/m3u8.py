@@ -19,7 +19,7 @@ if len(sys.argv) == 4:
     urlparse = urllib.parse.urlparse(sys.argv[3])
     (scheme, hostname, path) = (urlparse.scheme, urlparse.netloc, urlparse.path)
     path = os.path.split(path)[0]
-    if len(path)==0:
+    if len(path) == 0:
         usage()
         print('  请输入正确的 URL')
         sys.exit()
@@ -48,6 +48,7 @@ if not os.path.exists(dstdir) or \
     errExit(dstdir)
 if dstdir[-1] == '/':
     dstdir = dstdir[:-1]
+os.makedirs(dstdir + '/ts', mode=0o775, exist_ok=True)
 with open(m3u8file, 'r') as fi, \
         open(f'{dstdir}/0', 'w') as fo, \
         open(f'{dstdir}/a.m3u8', 'w') as dfo, \
@@ -63,12 +64,39 @@ with open(m3u8file, 'r') as fi, \
     djs.write("  const port = 3000;\n")
     djs.write("  let trans_files = [\n")
     i = 0
+    foundKey = False
+    keypre = '#EXT-X-KEY:METHOD=AES-128,URI='
     lastfile = 'a.m3u8'
     for line in fi:
         if line == '\n':  # 空行
             continue
         if line[0] == '#':  # 注释
-            dfo.write(line)
+            if not foundKey and line[: len(keypre)] == keypre:
+                if line[len(keypre)] == '"':
+                    keyurl = line[len(keypre) + 1:
+                                  line.find('"', len(keypre) + 1)]
+                else:
+                    keyurl = line[len(keypre):].rstrip()
+                if keyurl[: len('http://')] == 'http://' or keyurl[: len('https://')] == 'https://':  # 完整路径
+                    fo.write(keyurl + '\n')
+                elif keyurl[0] == '/':  # 不完整绝对路径
+                    if not upath:
+                        usage()
+                        print('  请重新运行, 并带上 "the full m3u8 URL" 参数')
+                        sys.exit()
+                    fo.write(upath["hostname"] + keyurl + '\n')
+                else:  # 相对路径
+                    if not upath:
+                        usage()
+                        print('  请重新运行, 并带上 "the full m3u8 URL" 参数')
+                        sys.exit()
+                    fo.write(upath["path"] + keyurl + '\n')
+                djs.write("'key.key',\n")
+                fo.write(' out=key.key\n')
+                dfo.write(keypre + '"key.key"\n')
+                foundKey = True
+            else:  # 普通注释
+                dfo.write(line)
             continue
         if line[: len('http://')] == 'http://' or line[: len('https://')] == 'https://':  # 完整路径
             fo.write(line)
@@ -85,39 +113,39 @@ with open(m3u8file, 'r') as fi, \
                 sys.exit()
             fo.write(upath["path"] + line)
         djs.write(f"'{lastfile}',\n")
-        lastfile = f'{str(i).zfill(4)}.ts'
+        lastfile = f'ts/{str(i).zfill(4)}.ts'
         fo.write(f' out={lastfile}\n')
         dfo.write(f'{lastfile}\n')
         i += 1
     djs.write(f"'{lastfile}'\n")
     djs.write("  ];\n")
     djs.write("\n")
-    djs.write("  (function () {\n")
+    djs.write("  (function init_trans_files() {\n")
+    djs.write("    const reg = /[0-9A-Za-z_+~\-\.\/]/g;\n")
     djs.write(
-        "    const reg = /[0-9A-Za-z]/g, oreg = '_+-~.'; /* const reg = /[0-9A-Za-z_+-~.]/g; */\n")
-    djs.write("    let files_attrs = [];\n")
-    djs.write(
-        "    (function init_trans_files() { trans_files.sort(); for (let i = 1; i < trans_files.length; i++) if (trans_files[i - 1] === trans_files[i]) { log(`警告: 重复指定文件: \"${trans_files[i]}\"`); trans_files.splice(i, 1); } })();\n")
-    djs.write(
-        "    (function conf_trans_files() { for (let i = 0; i < trans_files.length; i++) { files_attrs.push({ filename: trans_files[i], trans: false }); let t = trans_files[i], ta; ta = t; for (let c = 0; c < oreg.length; c++) while ((t = t.replace(oreg.charAt(c), '')) != ta) ta = t; const ncmpdreg = t.replace(reg, '').length !== 0; if (ncmpdreg) { log(`警告: 将不传输此文件: 文件名存在不符合正则表达式 /[0-9A-Za-z_+-~.]/ 的字符 : \"${trans_files[i]}\"`); trans_files.splice(i, 1); } } })();\n")
+        "    trans_files.sort(); for (let i = 1; i < trans_files.length; i++) { if (trans_files[i - 1] === trans_files[i]) { log(`警告: 重复指定文件: \"${trans_files[i]}\"`); trans_files.splice(i, 1); } } for (let i = 0; i < trans_files.length; i++) { if (trans_files[i].replace(reg, '').length !== 0) { log(`警告: 将不传输此文件: 文件名存在不符合正则表达式 /[0-9A-Za-z_+~\\-\\.\\/]/ 的字符 : \"${trans_files[i]}\"`); trans_files.splice(i, 1); } }\n")
     djs.write("  })();\n")
     djs.write("  const filen = trans_files.length;\n")
     djs.write("\n")
     djs.write("  const server = http.createServer((req, res) => {\n")
     djs.write("    const curURL = new URL('http://hostname' + req.url);\n")
-    djs.write("    const pathname = curURL.pathname;\n")
+    djs.write("    const pathname = curURL.pathname.replace(/\s/g, '');\n")
     djs.write("\n")
     djs.write("    res.removeHeader('Transfer-Encoding');\n")
     djs.write("    res.setHeader('Server', 'Apache');\n")
     djs.write("    res.setHeader('Connection', 'close');\n")
     djs.write("    let statcode = 0, haspath = false;\n")
-    djs.write("    if (pathname === '/') { /* hostname */\n")
-    djs.write("      statcode = 200;\n")
     djs.write(
-        "      res.writeHead(200, { 'Content-Length': '0', 'Content-Type': 'text/html' });\n")
-    djs.write("      res.end();\n")
-    djs.write("    }\n")
-    djs.write("    else {\n")
+        "    function Response200(res) { res.writeHead(200, { 'Content-Length': '0', 'Content-Type': 'text/html' }); res.end(); }\n")
+    djs.write(
+        "    function Response404(res) { res.writeHead(404, { 'Content-Length': '0', 'Content-Type': 'text/html' }); res.end(); }\n")
+    djs.write("    if (/.*\.\..*/g.test(pathname)) { /* 请求上级目录 */\n")
+    djs.write("      statcode = 404;\n")
+    djs.write("      Response404(res);\n")
+    djs.write("    } else if (pathname === '/') { /* hostname */\n")
+    djs.write("      statcode = 200;\n")
+    djs.write("      Response200(res);\n")
+    djs.write("    } else {\n")
     djs.write("      for (var i = 0; i < filen; i++)\n")
     djs.write("        if (pathname === ('/' + trans_files[i])) {\n")
     djs.write("          haspath = true;\n")
@@ -127,27 +155,27 @@ with open(m3u8file, 'r') as fi, \
     djs.write("        if (fs.existsSync(trans_files[i])) { /* exists */\n")
     djs.write("          statcode = 200;\n")
     djs.write("          res.writeHead(200, {\n")
-    djs.write("            'Content-Type': (pathname === '/a.m3u8' ? 'application/vnd.apple.mpegURL' : 'video/mp2t'),\n")
+    djs.write(
+        "            'Content-Type': (pathname === '/a.m3u8' ? 'application/vnd.apple.mpegURL' :\n")
+    djs.write(
+        "              (pathname === '/key.key' ? 'application/octet-stream' : 'video/mp2t')\n")
+    djs.write("            ),\n")
     djs.write("            'access-control-allow-origin': '*',\n")
     djs.write("            'access-control-allow-methods': 'POST, GET, OPTIONS'\n")
     djs.write("          });\n")
     djs.write("          fs.createReadStream(trans_files[i]).pipe(res);\n")
     djs.write("        } else { /* not exists */\n")
     djs.write("          statcode = 404;\n")
-    djs.write(
-        "          res.writeHead(404, { 'Content-Length': '0', 'Content-Type': 'text/html' });\n")
-    djs.write("          res.end();\n")
+    djs.write("          Response404(res);\n")
     djs.write("        }\n")
     djs.write("      } else { /* 404 */\n")
     djs.write("        statcode = 404;\n")
-    djs.write(
-        "        res.writeHead(404, { 'Content-Length': '0', 'Content-Type': 'text/html' });\n")
-    djs.write("        res.end();\n")
+    djs.write("        Response404(res);\n")
     djs.write("      }\n")
     djs.write("    }\n")
     djs.write("\n")
     djs.write("    const agent = req.headers['user-agent'];\n")
-    djs.write("    log(`[${new Date().toLocaleString()}] ${req.connection.remoteAddress} - \"${req.method} ${req.url} HTTP/${req.httpVersion}\" ${statcode.toString(10)} \"${!agent ? '' : `${agent}`}\"`);\n")
+    djs.write("    log(`[${new Date().toLocaleString()}] ${req.socket.remoteAddress} - \"${req.method} ${req.url} HTTP/${req.httpVersion}\" ${statcode.toString(10)} \"${!agent ? '' : `${agent}`}\"`);\n")
     djs.write("  });\n")
     djs.write("\n")
     djs.write("  function listen_log(Message) {\n")
@@ -156,7 +184,7 @@ with open(m3u8file, 'r') as fi, \
     djs.write("      log('  共发布 ' + trans_files.length.toString(10) + ' 个文件');\n")
     djs.write("      log('====================================================');\n")
     djs.write("      log(Message);\n")
-    djs.write("      log('file:///home/ubuntu/Downloads/m3u8player/index.html');\n")
+    djs.write("      log('file:///home/ubuntu/m3u8player/index.html');\n")
     djs.write(
         "      log(`视频文件: http://${hostname}:${port}/a.m3u8 或者 http://localhost:${port}/a.m3u8`);\n")
     djs.write("    }\n")
